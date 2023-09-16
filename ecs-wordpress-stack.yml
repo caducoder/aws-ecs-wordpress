@@ -1,0 +1,329 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Implantacao de WordPress com Amazon ECS usando AWS CloudFormation
+
+Parameters:
+  ClusterNameParameter:
+    Description: Enter the name for the ecs cluster.
+    Type: String
+  ServiceNameParameter:
+    Description: Enter the name for the ecs service.
+    Type: String
+  VPCName:
+    Description: The name of the VPC being created.
+    Type: String
+  DBName:
+    Description: The WordPress database name
+    Default: wordpressdb
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBUsername:
+    Description: The WordPress database admin account username
+    NoEcho: 'true'
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBPassword:
+    Description: The WordPress database admin account password
+    NoEcho: 'true'
+    Type: String
+    MinLength: '6'
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: must contain only alphanumeric characters.
+  MaxContainers:
+    Description: The max numbers of containers to scale to
+    Type: Number
+
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: "10.0.0.0/16"
+    Public0:
+      CIDR: "10.0.0.0/24"
+    Public1:
+      CIDR: "10.0.1.0/24"
+  AZRegions:
+    us-east-1:
+      AZs: ["a", "b"]
+    us-east-2:
+      AZs: ["a", "b"]
+    us-west-1:
+      AZs: ["c", "b"]
+    us-west-2:
+      AZs: ["a", "b"]
+  
+Resources:
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      EnableDnsSupport: "true"
+      EnableDnsHostnames: "true"
+      CidrBlock:
+        Fn::FindInMap:
+          - "SubnetConfig"
+          - "VPC"
+          - "CIDR"
+      Tags:
+          -
+            Key: "Application"
+            Value:
+              Ref: "AWS::StackName"
+          -
+            Key: "Network"
+            Value: "Public"
+          -
+            Key: "Name"
+            Value: !Ref VPCName
+
+  PublicSubnet0:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone:
+        Fn::Sub:
+          - "${AWS::Region}${AZ}"
+          - AZ: !Select [ 0, !FindInMap [ "AZRegions", !Ref "AWS::Region", "AZs" ] ]
+      CidrBlock:
+        Fn::FindInMap:
+          - "SubnetConfig"
+          - "Public0"
+          - "CIDR"
+      MapPublicIpOnLaunch: "true"
+
+  PublicSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone:
+        Fn::Sub:
+          - "${AWS::Region}${AZ}"
+          - AZ: !Select [ 0, !FindInMap [ "AZRegions", !Ref "AWS::Region", "AZs" ] ]
+      CidrBlock:
+        Fn::FindInMap:
+          - "SubnetConfig"
+          - "Public1"
+          - "CIDR"
+      MapPublicIpOnLaunch: "true"
+  
+  #-------------- Elastic Container Service --------------#
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: 
+        Ref: ClusterNameParameter
+  ECSSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: ECS Security Group
+      VpcId: !Ref VPC
+  ECSService:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      TaskDefinition: !Ref ECSTaskDefinition
+      ServiceName: 
+        Ref: ServiceNameParameter
+      Cluster: 
+        Ref: ECSCluster
+      DesiredCount: 1
+      LaunchType: FARGATE
+  AutoScaling:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties: 
+      MaxCapacity: !Ref MaxContainers
+      MinCapacity: 1
+      ResourceId: !Join
+        - '/'
+        - - service
+          - !Ref ECSCluster
+          - !GetAtt ECSService.Name
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  #-------------- Elastic FileSystem --------------#
+  FileSystem: #configurado
+    Type: 'AWS::EFS::FileSystem'
+    Properties:
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: Wordpress-demo
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+    
+  EFSSecurityGroup: #configurado
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: FileSystem Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - SourceSecurityGroupId: !Ref ContainerSecurityGroup
+        IpProtocol: -1
+  
+  AccessPoint: #configurado
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      RootDirectory:
+        CreationInfo:
+          OwnerGid: "1000"
+          OwnerUid: "1000"
+          Permissions: "0777"
+        Path: "/wordpress"
+
+  #-------------- Relational Database System --------------#
+  DBSubnetGroup: #configurado
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupName: wp-db-subnet-group
+      DBSubnetGroupDescription: wp-db-subnet-group
+      SubnetIds:
+      - !Ref PublicSubnet0
+      - !Ref PublicSubnet1
+
+  DBSecurityGroup: #configurado
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: RDS Security Group
+      VpcId: !Ref VPC
+      GroupName: Wordpress-Demo-RDS-SG
+      SecurityGroupIngress:
+      - IpProtocol: "tcp"
+        FromPort: 3306
+        ToPort: 3306
+        CidrIp: 10.0.0.0/16
+    
+  WordpressDB: #configurado
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBInstanceIdentifier: wp-db1
+      DBInstanceClass: db.t3.micro
+      DBName: !Ref DBName
+      Engine: mysql
+      MasterUserPassword: !Ref DBPassword
+      MasterUsername: !Ref DBUsername
+      PubliclyAccessible: false
+      AllocatedStorage: 20
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+
+  #-------------- Load Balancer --------------#
+
+  ALBSecurityGroup: #configurado
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: LoadBalancer Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress: # permite que qualquer um acesse
+        - IpProtocol: "tcp"
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  PublicLoadBalancer: #configurado
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet0
+        - !Ref PublicSubnet1
+      SecurityGroups: 
+      - !Ref ALBSecurityGroup
+      Type: application
+
+  ContainerSecurityGroup: #configurado
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Access to the containers
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref 'ALBSecurityGroup'
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 0.0.0.0/0
+
+  WordPressTargetGroup: #configurado
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: ip
+
+  LoadBalancerListener: #configurado
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+        LoadBalancerArn: !Ref PublicLoadBalancer
+        Protocol: "HTTP"
+        Port: 80
+        DefaultActions:
+          - Type: forward
+            ForwardConfig:
+              TargetGroups:
+                - TargetGroupArn: !Ref WordPressTargetGroup
+                  Weight: 1
+
+  ECSTaskDefinition: #configurado
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      NetworkMode: awsvpc
+      ContainerDefinitions:
+      - PortMappings:
+        - ContainerPort: 8080
+          Protocol: tcp
+        Essential: true
+        MountPoints:
+        - containerPath: "/bitnami/wordpress"
+          sourceVolume: wordpress
+        Name: wordpress
+        Image: 'bitnami/wordpress'
+        Environment:
+        - name: MARIADB_HOST
+          value: !GetAtt WordpressDB.Endpoint.Address
+        - name: WORDPRESS_DATABASE_USER
+          value: !Ref DBUsername
+        - name: WORDPRESS_DATABASE_PASSWORD
+          value: !Ref DBPassword
+        - name: WORDPRESS_DATABASE_NAME
+          value: !Ref DBName
+        - name: PHP_MEMORY_LIMIT
+          value: 512M
+        - name: enabled
+          value: 'false'
+        - name: ALLOW_EMPTY_PASSWORD
+          value: 'yes'
+      RequiresCompatibilities:
+      - FARGATE
+      Cpu: '1024'
+      Memory: '3072'
+      Volumes:
+      - Name: wordpress
+        EFSVolumeConfiguration:
+          FileSystemId: !Ref FileSystem
+          TransitEncryption: ENABLED
+          AuthorizationConfig:
+            AccessPointId: !Ref AccessPoint
+            Iam: DISABLED
+
+Outputs:
+  WebsiteURL:
+    Value:
+      Fn::Join:
+      - ''
+      - - http://
+        - Fn::GetAtt:
+          - PublicLoadBalancer
+          - DNSName
+        - "/wordpress"
+    Description: WordPress Website
