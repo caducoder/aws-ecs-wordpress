@@ -2,14 +2,17 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Implantacao de WordPress com Amazon ECS usando AWS CloudFormation
 
 Parameters:
+  VpcId:
+    Type: 'AWS::EC2::VPC::Id'
+    Description: Select a VPC that allows instances to access the Internet.
+  SubnetId:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: Select at least two subnets in your selected VPC.
   ClusterNameParameter:
     Description: Enter the name for the ecs cluster.
     Type: String
   ServiceNameParameter:
     Description: Enter the name for the ecs service.
-    Type: String
-  VPCName:
-    Description: The name of the VPC being created.
     Type: String
   DBName:
     Description: The WordPress database name
@@ -38,88 +41,39 @@ Parameters:
     Description: The max numbers of containers to scale to
     Type: Number
 
-Mappings:
-  SubnetConfig:
-    VPC:
-      CIDR: "10.0.0.0/16"
-    Public0:
-      CIDR: "10.0.0.0/24"
-    Public1:
-      CIDR: "10.0.1.0/24"
-  AZRegions:
-    us-east-1:
-      AZs: ["a", "b"]
-    us-east-2:
-      AZs: ["a", "b"]
-    us-west-1:
-      AZs: ["c", "b"]
-    us-west-2:
-      AZs: ["a", "b"]
   
 Resources:
-  VPC:
-    Type: "AWS::EC2::VPC"
-    Properties:
-      EnableDnsSupport: "true"
-      EnableDnsHostnames: "true"
-      CidrBlock:
-        Fn::FindInMap:
-          - "SubnetConfig"
-          - "VPC"
-          - "CIDR"
-      Tags:
-          -
-            Key: "Application"
-            Value:
-              Ref: "AWS::StackName"
-          -
-            Key: "Network"
-            Value: "Public"
-          -
-            Key: "Name"
-            Value: !Ref VPCName
-
-  PublicSubnet0:
-    Type: 'AWS::EC2::Subnet'
-    Properties:
-      VpcId: !Ref VPC
-      AvailabilityZone:
-        Fn::Sub:
-          - "${AWS::Region}${AZ}"
-          - AZ: !Select [ 0, !FindInMap [ "AZRegions", !Ref "AWS::Region", "AZs" ] ]
-      CidrBlock:
-        Fn::FindInMap:
-          - "SubnetConfig"
-          - "Public0"
-          - "CIDR"
-      MapPublicIpOnLaunch: "true"
-
-  PublicSubnet1:
-    Type: 'AWS::EC2::Subnet'
-    Properties:
-      VpcId: !Ref VPC
-      AvailabilityZone:
-        Fn::Sub:
-          - "${AWS::Region}${AZ}"
-          - AZ: !Select [ 1, !FindInMap [ "AZRegions", !Ref "AWS::Region", "AZs" ] ]
-      CidrBlock:
-        Fn::FindInMap:
-          - "SubnetConfig"
-          - "Public1"
-          - "CIDR"
-      MapPublicIpOnLaunch: "true"
-
-  InternetGateway:
-    Type: "AWS::EC2::InternetGateway"
-
-  GatewayToInternet:
-    Type: "AWS::EC2::VPCGatewayAttachment"
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId:
-        Ref: "InternetGateway"
 
   #-------------- Elastic Container Service --------------#
+  FargateAccessRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                "ecs-tasks.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonElasticFileSystemsUtils
+
+  FargateAccessPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: !Sub ${AWS::StackName}-FargateAccessPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "elasticfilesystem:*"
+            Resource:
+              - "*"
+      Roles:
+        - !Ref FargateAccessRole
+  
   ECSCluster:
     Type: 'AWS::ECS::Cluster'
     Properties:
@@ -130,7 +84,61 @@ Resources:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: ECS Security Group
-      VpcId: !Ref VPC
+      VpcId: !Ref VpcId
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref 'ServiceNameParameter'
+
+  ECSTaskDefinition: 
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '1024'
+      Memory: '2048'
+      TaskRoleArn: !Ref FargateAccessRole
+      ExecutionRoleArn: 'arn:aws:iam::117793179715:role/ecsTaskExecutionRole'
+      ContainerDefinitions:
+        - Name: wordpress
+          Image: 'bitnami/wordpress'
+          Cpu: "1024"
+          Memory: "2048"
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          MountPoints:
+            - ContainerPath: "/bitnami/wordpress"
+              SourceVolume: wordpress
+          Environment:
+            - Name: MARIADB_HOST
+              Value: !GetAtt WordpressDB.Endpoint.Address
+            - Name: WORDPRESS_DATABASE_USER
+              Value: !Ref DBUsername
+            - Name: WORDPRESS_DATABASE_PASSWORD
+              Value: !Ref DBPassword
+            - Name: WORDPRESS_DATABASE_NAME
+              Value: !Ref DBName
+            - Name: PHP_MEMORY_LIMIT
+              Value: 512M
+            - Name: enabled
+              Value: 'false'
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: !Ref 'ServiceNameParameter'
+      Volumes:
+        - Name: wordpress
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref AccessPoint
+              IAM: DISABLED
 
   ECSService:
     Type: 'AWS::ECS::Service'
@@ -141,9 +149,7 @@ Resources:
           AssignPublicIp: DISABLED
           SecurityGroups:
             - !Ref ECSSecurityGroup
-          Subnets:
-            - !Ref PublicSubnet0
-            - !Ref PublicSubnet1
+          Subnets: !Ref SubnetId
       ServiceName: 
         Ref: ServiceNameParameter
       Cluster: 
@@ -165,7 +171,7 @@ Resources:
       ServiceNamespace: ecs
 
   #-------------- Elastic FileSystem --------------#
-  FileSystem: #configurado
+  FileSystem: 
     Type: 'AWS::EFS::FileSystem'
     Properties:
       Encrypted: true
@@ -175,7 +181,7 @@ Resources:
       PerformanceMode: generalPurpose
       ThroughputMode: bursting
   
-  AccessPoint: #configurado
+  AccessPoint: 
     Type: AWS::EFS::AccessPoint
     Properties:
       FileSystemId: !Ref FileSystem
@@ -187,20 +193,18 @@ Resources:
         Path: "/wordpress"
 
   #-------------- Relational Database System --------------#
-  DBSubnetGroup: #configurado
+  DBSubnetGroup:
     Type: 'AWS::RDS::DBSubnetGroup'
     Properties:
       DBSubnetGroupName: wp-db-subnet-group
       DBSubnetGroupDescription: wp-db-subnet-group
-      SubnetIds:
-      - !Ref PublicSubnet0
-      - !Ref PublicSubnet1
+      SubnetIds: !Ref SubnetId
 
-  DBSecurityGroup: #configurado
+  DBSecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: RDS Security Group
-      VpcId: !Ref VPC
+      VpcId: !Ref VpcId
       GroupName: Wordpress-Demo-RDS-SG
       SecurityGroupIngress:
       - IpProtocol: "tcp"
@@ -208,7 +212,7 @@ Resources:
         ToPort: 3306
         CidrIp: 10.0.0.0/16
     
-  WordpressDB: #configurado
+  WordpressDB:
     Type: 'AWS::RDS::DBInstance'
     Properties:
       DBInstanceIdentifier: wp-database
@@ -224,31 +228,30 @@ Resources:
         - !Ref DBSecurityGroup
 
   #-------------- Load Balancer --------------#
-  ALBSecurityGroup: #configurado
+  ALBSecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: LoadBalancer Security Group
-      VpcId: !Ref VPC
+      VpcId: !Ref VpcId
       SecurityGroupIngress: # permite que qualquer um acesse
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
 
-  PublicLoadBalancer: #configurado
+  PublicLoadBalancer:
     Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
     Properties:
       Scheme: internet-facing
-      Subnets:
-        - !Ref PublicSubnet0
-        - !Ref PublicSubnet1
+      Subnets: !Ref SubnetId
+
       SecurityGroups: 
       - !Ref ALBSecurityGroup
       Type: application
 
-  ContainerSecurityGroup: #configurado
+  ContainerSecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: Access to the containers
-      VpcId: !Ref VPC
+      VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 0
@@ -259,7 +262,7 @@ Resources:
           ToPort: 2049
           CidrIp: 0.0.0.0/0
 
-  WordPressTargetGroup: #configurado
+  WordPressTargetGroup:
     Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
     Properties:
       HealthCheckIntervalSeconds: 10
@@ -267,10 +270,10 @@ Resources:
       HealthyThresholdCount: 2
       Port: 8080
       Protocol: HTTP
-      VpcId: !Ref VPC
+      VpcId: !Ref VpcId
       TargetType: ip
 
-  LoadBalancerListener: #configurado
+  LoadBalancerListener:
     Type: 'AWS::ElasticLoadBalancingV2::Listener'
     Properties:
         LoadBalancerArn: !Ref PublicLoadBalancer
@@ -295,48 +298,6 @@ Resources:
             - "/*"
       ListenerArn: !Ref LoadBalancerListener
       Priority: 1
-
-  ECSTaskDefinition: #configurado
-    Type: 'AWS::ECS::TaskDefinition'
-    Properties:
-      NetworkMode: awsvpc
-      ContainerDefinitions:
-      - PortMappings:
-        - ContainerPort: 8080
-          Protocol: tcp
-        Essential: true
-        MountPoints:
-        - ContainerPath: "/bitnami/wordpress"
-          SourceVolume: wordpress
-        Name: wordpress
-        Image: 'bitnami/wordpress'
-        Environment:
-        - Name: MARIADB_HOST
-          Value: !GetAtt WordpressDB.Endpoint.Address
-        - Name: WORDPRESS_DATABASE_USER
-          Value: !Ref DBUsername
-        - Name: WORDPRESS_DATABASE_PASSWORD
-          Value: !Ref DBPassword
-        - Name: WORDPRESS_DATABASE_NAME
-          Value: !Ref DBName
-        - Name: PHP_MEMORY_LIMIT
-          Value: 512M
-        - Name: enabled
-          Value: 'false'
-        - Name: ALLOW_EMPTY_PASSWORD
-          Value: 'yes'
-      RequiresCompatibilities:
-      - FARGATE
-      Cpu: '1024'
-      Memory: '3072'
-      Volumes:
-      - Name: wordpress
-        EFSVolumeConfiguration:
-          FilesystemId: !Ref FileSystem
-          TransitEncryption: ENABLED
-          AuthorizationConfig:
-            AccessPointId: !Ref AccessPoint
-            IAM: DISABLED
 
 Outputs:
   WebsiteURL:
