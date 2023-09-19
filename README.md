@@ -10,3 +10,5 @@ Repositório com o template para criação de uma stack WordPress através da AW
 - Um sistema de arquivos EFS para armazenar dados persistentes do WordPress.
 - Banco de dados MySQL no RDS requerido pelo WordPress
 
+## Arquitetura
+![](./aws-cfn-wp.drawio.png)
