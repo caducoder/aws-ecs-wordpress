@@ -54,7 +54,6 @@ Mappings:
       AMIID: ami-00e4b147599c13588
 
 Resources:
-
   #-------------- Elastic Container Service --------------#
   ECSCluster:
     Type: 'AWS::ECS::Cluster'
@@ -232,6 +231,7 @@ Resources:
                 Resource: '*'
 
   #-------------- Elastic FileSystem --------------#
+  ## armazenamento para os dados do wordpress
   FileSystem: 
     Type: 'AWS::EFS::FileSystem'
     Properties:
@@ -274,6 +274,7 @@ Resources:
       SecurityGroups:
         - !Ref EFSMountTargetSG
   
+  ## recurso que indica o ponto de acesso ao filesystem
   AccessPoint: 
     Type: AWS::EFS::AccessPoint
     Properties:
