@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: "2010-09-09"
+AWSTemplateFormatVersion: 2010-09-09
 Description: Implantacao de WordPress com Amazon ECS usando AWS CloudFormation
 
 Parameters:
@@ -8,167 +8,228 @@ Parameters:
   SubnetId:
     Type: 'List<AWS::EC2::Subnet::Id>'
     Description: Select at least two subnets in your selected VPC.
-  ClusterNameParameter:
-    Description: Enter the name for the ecs cluster.
+  AppName:
+    Description: The application name
     Type: String
-  ServiceNameParameter:
-    Description: Enter the name for the ecs service.
-    Type: String
-  DBName:
-    Description: The WordPress database name
-    Default: wordpressdb
-    Type: String
-    MinLength: '1'
-    MaxLength: '64'
-    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
-    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
-  DBUsername:
-    Description: The WordPress database admin account username
-    NoEcho: 'true'
-    Type: String
-    MinLength: '1'
-    MaxLength: '16'
-    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
-    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
-  DBPassword:
-    Description: The WordPress database admin account password
-    NoEcho: 'true'
-    Type: String
-    MinLength: '8'
-    AllowedPattern: "[a-zA-Z0-9]*"
-    ConstraintDescription: must contain only alphanumeric characters.
-  MaxContainers:
-    Description: The max numbers of containers to scale to
+  DesiredCapacity:
     Type: Number
+    Default: '1'
+    Description: Number of instances to launch in your ECS cluster.
+  MaxSize:
+    Type: Number
+    Default: '1'
+    Description: Maximum number of instances that can be launched in your ECS cluster.
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - m3.medium
+      - m3.large
+    ConstraintDescription: Please choose a valid instance type.
 
-  
+Mappings:
+  AWSRegionToAMI:
+    us-east-1:
+      AMIID: ami-09bee01cc997a78a6
+    us-east-2:
+      AMIID: ami-0a9e12068cb98a01d
+    us-west-1:
+      AMIID: ami-0fa6c8d131a220017
+    us-west-2:
+      AMIID: ami-078c97cf1cefd1b38
+    eu-west-1:
+      AMIID: ami-0c9ef930279337028
+    eu-central-1:
+      AMIID: ami-065c1e34da68f2b02
+    ap-northeast-1:
+      AMIID: ami-02265963d1614d04d
+    ap-southeast-1:
+      AMIID: ami-0b68661b29b9e058c
+    ap-southeast-2:
+      AMIID: ami-00e4b147599c13588
+
 Resources:
 
   #-------------- Elastic Container Service --------------#
-  FargateAccessRole:
-    Type: "AWS::IAM::Role"
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: "Allow"
-            Principal:
-              Service:
-                "ecs-tasks.amazonaws.com"
-            Action:
-              - "sts:AssumeRole"
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonElasticFileSystemsUtils
-
-  FargateAccessPolicy:
-    Type: "AWS::IAM::Policy"
-    Properties:
-      PolicyName: !Sub ${AWS::StackName}-FargateAccessPolicy
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Action:
-              - "elasticfilesystem:*"
-            Resource:
-              - "*"
-      Roles:
-        - !Ref FargateAccessRole
-  
   ECSCluster:
     Type: 'AWS::ECS::Cluster'
-    Properties:
-      ClusterName: 
-        Ref: ClusterNameParameter
-
-  ECSSecurityGroup:
+  
+  EcsSecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: ECS Security Group
       VpcId: !Ref VpcId
-
-  LogGroup:
-    Type: AWS::Logs::LogGroup
+  
+  EcsSecurityGroupHTTPinbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
     Properties:
-      LogGroupName: !Ref 'ServiceNameParameter'
-
-  ECSTaskDefinition: 
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+  
+  EcsSecurityGroupSSHinbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: 0.0.0.0/0
+  
+  EcsSecurityGroupALBports:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 31000
+      ToPort: 61000
+      SourceSecurityGroupId: !Ref EcsSecurityGroup
+  
+  taskdefinition:
     Type: 'AWS::ECS::TaskDefinition'
     Properties:
-      NetworkMode: awsvpc
-      RequiresCompatibilities:
-        - FARGATE
-      Cpu: '1024'
-      Memory: '2048'
-      TaskRoleArn: !Ref FargateAccessRole
-      ExecutionRoleArn: 'arn:aws:iam::117793179715:role/ecsTaskExecutionRole'
+      Family: !Join 
+        - ''
+        - - !Ref 'AWS::StackName'
+          - '-ecs-demo-app'
       ContainerDefinitions:
-        - Name: wordpress
-          Image: 'bitnami/wordpress'
-          Cpu: "1024"
-          Memory: "2048"
-          PortMappings:
-            - ContainerPort: 8080
-              Protocol: tcp
+        - Name: !Ref AppName
+          Cpu: '10'
+          Essential: 'true'
+          Image: 'wordpress:latest'
+          Memory: '300'
           MountPoints:
-            - ContainerPath: "/bitnami/wordpress"
-              SourceVolume: wordpress
-          Environment:
-            - Name: MARIADB_HOST
-              Value: !GetAtt WordpressDB.Endpoint.Address
-            - Name: WORDPRESS_DATABASE_USER
-              Value: !Ref DBUsername
-            - Name: WORDPRESS_DATABASE_PASSWORD
-              Value: !Ref DBPassword
-            - Name: WORDPRESS_DATABASE_NAME
-              Value: !Ref DBName
-            - Name: PHP_MEMORY_LIMIT
-              Value: 512M
-            - Name: enabled
-              Value: 'false'
+            - ContainerPath: "/var/www/html"
+              SourceVolume: 'EFSVolume'
+              ReadOnly: false
           LogConfiguration:
-            LogDriver: 'awslogs'
+            LogDriver: awslogs
             Options:
-              awslogs-group: !Ref LogGroup
+              awslogs-group: !Ref CloudwatchLogsGroup
               awslogs-region: !Ref 'AWS::Region'
-              awslogs-stream-prefix: !Ref 'ServiceNameParameter'
+              awslogs-stream-prefix: ecs-wp-app
+          PortMappings:
+            - ContainerPort: 80
       Volumes:
-        - Name: wordpress
+        - Name: 'EFSVolume'
           EFSVolumeConfiguration:
             FilesystemId: !Ref FileSystem
             TransitEncryption: ENABLED
             AuthorizationConfig:
               AccessPointId: !Ref AccessPoint
               IAM: DISABLED
-
-  ECSService:
-    Type: 'AWS::ECS::Service'
+  
+  #-------------- CloudWatch Logs --------------#
+  CloudwatchLogsGroup:
+    Type: 'AWS::Logs::LogGroup'
     Properties:
-      TaskDefinition: !Ref ECSTaskDefinition
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: DISABLED
-          SecurityGroups:
-            - !Ref ECSSecurityGroup
-          Subnets: !Ref SubnetId
-      ServiceName: 
-        Ref: ServiceNameParameter
-      Cluster: 
-        Ref: ECSCluster
-      DesiredCount: 1
-      LaunchType: FARGATE
-
-  AutoScaling:
-    Type: AWS::ApplicationAutoScaling::ScalableTarget
-    Properties: 
-      MaxCapacity: !Ref MaxContainers
-      MinCapacity: 1
-      ResourceId: !Join
-        - '/'
-        - - service
-          - !Ref ECSCluster
-          - !GetAtt ECSService.Name
-      ScalableDimension: ecs:service:DesiredCount
-      ServiceNamespace: ecs
+      LogGroupName: !Join 
+        - '-'
+        - - ECSLogGroup
+          - !Ref 'AWS::StackName'
+      RetentionInDays: 14
+  
+  #-------------- Elastic Load Balancer --------------#
+  ECSALB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: ECSALB
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+      Subnets: !Ref SubnetId
+      SecurityGroups:
+        - !Ref EcsSecurityGroup
+  
+  ALBListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    DependsOn: ECSServiceRole
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ECSTG
+      LoadBalancerArn: !Ref ECSALB
+      Port: 80
+      Protocol: HTTP
+  
+  ECSALBListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    DependsOn: ALBListener
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ECSTG
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /
+      ListenerArn: !Ref ALBListener
+      Priority: 1
+  
+  ECSTG:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    DependsOn: ECSALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: 200-299,302
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: ECSTG
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VpcId
+  
+  service:
+    Type: 'AWS::ECS::Service'
+    DependsOn: ALBListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      DesiredCount: '1'
+      LoadBalancers:
+        - ContainerName: !Ref AppName
+          ContainerPort: 80
+          TargetGroupArn: !Ref ECSTG
+      Role: !Ref ECSServiceRole
+      TaskDefinition: !Ref taskdefinition
+  
+  ECSServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+                  - 'elasticloadbalancing:RegisterTargets'
+                  - 'ec2:Describe*'
+                  - 'ec2:AuthorizeSecurityGroupIngress'
+                Resource: '*'
 
   #-------------- Elastic FileSystem --------------#
   FileSystem: 
@@ -180,133 +241,215 @@ Resources:
           Value: Wordpress-demo
       PerformanceMode: generalPurpose
       ThroughputMode: bursting
+
+  EFSMountTargetSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-EFS-MT-SG
+      GroupDescription: !Sub ${AWS::StackName} SG do EFSMountTarget
+      SecurityGroupIngress:
+        - Description: Permite trafego do ECSServiceSecurityGroup na porta 2049.
+          IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref EcsSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-EFS-MT-SG
+      VpcId: !Ref VpcId
+  
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [ 0, !Ref SubnetId ]
+      SecurityGroups:
+        - !Ref EFSMountTargetSG
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [ 1, !Ref SubnetId ]
+      SecurityGroups:
+        - !Ref EFSMountTargetSG
   
   AccessPoint: 
     Type: AWS::EFS::AccessPoint
     Properties:
       FileSystemId: !Ref FileSystem
-      RootDirectory:
-        CreationInfo:
-          OwnerGid: "1000"
-          OwnerUid: "1000"
-          Permissions: "0777"
-        Path: "/wordpress"
 
-  #-------------- Relational Database System --------------#
-  DBSubnetGroup:
-    Type: 'AWS::RDS::DBSubnetGroup'
+  #-------------- Auto Scaling --------------#
+  ECSAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
     Properties:
-      DBSubnetGroupName: wp-db-subnet-group
-      DBSubnetGroupDescription: wp-db-subnet-group
-      SubnetIds: !Ref SubnetId
+      VPCZoneIdentifier: !Ref SubnetId
+      LaunchConfigurationName: !Ref ContainerInstances
+      MinSize: '1'
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  
+  ContainerInstances:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: !FindInMap 
+        - AWSRegionToAMI
+        - !Ref 'AWS::Region'
+        - AMIID
+      SecurityGroups:
+        - !Ref EcsSecurityGroup
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData: !Base64 
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - echo ECS_CLUSTER=
+            - !Ref ECSCluster
+            - |2
+               >> /etc/ecs/ecs.config
+            - |
+              yum install -y aws-cfn-bootstrap
+            - '/opt/aws/bin/cfn-signal -e $? '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource ECSAutoScalingGroup '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
 
-  DBSecurityGroup:
-    Type: 'AWS::EC2::SecurityGroup'
+  ServiceScalingTarget:
+    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+    DependsOn: service
     Properties:
-      GroupDescription: RDS Security Group
-      VpcId: !Ref VpcId
-      GroupName: Wordpress-Demo-RDS-SG
-      SecurityGroupIngress:
-      - IpProtocol: "tcp"
-        FromPort: 3306
-        ToPort: 3306
-        CidrIp: 10.0.0.0/16
-    
-  WordpressDB:
-    Type: 'AWS::RDS::DBInstance'
+      MaxCapacity: 2
+      MinCapacity: 1
+      ResourceId: !Join 
+        - ''
+        - - service/
+          - !Ref ECSCluster
+          - /
+          - !GetAtt 
+            - service
+            - Name
+      RoleARN: !GetAtt 
+        - AutoscalingRole
+        - Arn
+      ScalableDimension: 'ecs:service:DesiredCount'
+      ServiceNamespace: ecs
+  
+  ServiceScalingPolicy:
+    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
     Properties:
-      DBInstanceIdentifier: wp-database
-      DBInstanceClass: db.t3.micro
-      DBName: !Ref DBName
-      Engine: mysql
-      MasterUserPassword: !Ref DBPassword
-      MasterUsername: !Ref DBUsername
-      PubliclyAccessible: false
-      AllocatedStorage: 20
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      VPCSecurityGroups:
-        - !Ref DBSecurityGroup
-
-  #-------------- Load Balancer --------------#
-  ALBSecurityGroup:
-    Type: 'AWS::EC2::SecurityGroup'
+      PolicyName: AStepPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: PercentChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 200
+  
+  ALB500sAlarmScaleUp:
+    Type: 'AWS::CloudWatch::Alarm'
     Properties:
-      GroupDescription: LoadBalancer Security Group
-      VpcId: !Ref VpcId
-      SecurityGroupIngress: # permite que qualquer um acesse
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-
-  PublicLoadBalancer:
-    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: '10'
+      AlarmDescription: Alarm if our ALB generates too many HTTP 500s.
+      Period: '60'
+      AlarmActions:
+        - !Ref ServiceScalingPolicy
+      Namespace: AWS/ApplicationELB
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt 
+            - ECSALB
+            - LoadBalancerFullName
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: HTTPCode_ELB_5XX_Count
+  
+  EC2Role:
+    Type: 'AWS::IAM::Role'
     Properties:
-      Scheme: internet-facing
-      Subnets: !Ref SubnetId
-
-      SecurityGroups: 
-      - !Ref ALBSecurityGroup
-      Type: application
-
-  ContainerSecurityGroup:
-    Type: 'AWS::EC2::SecurityGroup'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:CreateCluster'
+                  - 'ecs:DeregisterContainerInstance'
+                  - 'ecs:DiscoverPollEndpoint'
+                  - 'ecs:Poll'
+                  - 'ecs:RegisterContainerInstance'
+                  - 'ecs:StartTelemetrySession'
+                  - 'ecs:Submit*'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+  
+  AutoscalingRole:
+    Type: 'AWS::IAM::Role'
     Properties:
-      GroupDescription: Access to the containers
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 0
-          ToPort: 65535
-          SourceSecurityGroupId: !Ref 'ALBSecurityGroup'
-        - IpProtocol: tcp
-          FromPort: 2049
-          ToPort: 2049
-          CidrIp: 0.0.0.0/0
-
-  WordPressTargetGroup:
-    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - application-autoscaling.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: service-autoscaling
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'application-autoscaling:*'
+                  - 'cloudwatch:DescribeAlarms'
+                  - 'cloudwatch:PutMetricAlarm'
+                  - 'ecs:DescribeServices'
+                  - 'ecs:UpdateService'
+                Resource: '*'
+  
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
     Properties:
-      HealthCheckIntervalSeconds: 10
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 2
-      Port: 8080
-      Protocol: HTTP
-      VpcId: !Ref VpcId
-      TargetType: ip
-
-  LoadBalancerListener:
-    Type: 'AWS::ElasticLoadBalancingV2::Listener'
-    Properties:
-        LoadBalancerArn: !Ref PublicLoadBalancer
-        Protocol: "HTTP"
-        Port: 80
-        DefaultActions:
-          - Type: forward
-            ForwardConfig:
-              TargetGroups:
-                - TargetGroupArn: !Ref WordPressTargetGroup
-                  Weight: 1
-
-  LoadBalancerRule:
-    Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    Properties:
-      Actions:
-        - TargetGroupArn: !Ref WordPressTargetGroup
-          Type: 'forward'
-      Conditions:
-        - Field: path-pattern
-          Values:
-            - "/*"
-      ListenerArn: !Ref LoadBalancerListener
-      Priority: 1
+      Path: /
+      Roles:
+        - !Ref EC2Role
 
 Outputs:
-  WebsiteURL:
-    Value:
-      Fn::Join:
+  ecsservice:
+    Value: !Ref service
+  ecscluster:
+    Value: !Ref ECSCluster
+  ECSALB:
+    Description: Your ALB DNS URL
+    Value: !Join 
       - ''
-      - - http://
-        - Fn::GetAtt:
-          - PublicLoadBalancer
+      - - !GetAtt 
+          - ECSALB
           - DNSName
-        - "/wordpress"
-    Description: WordPress Website
+  taskdef:
+    Value: !Ref taskdefinition
